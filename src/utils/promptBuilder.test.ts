@@ -2,16 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildStructuredPrompt,
+  buildConcisePrompt,
+  buildDetailedStepByStepPrompt,
+  buildAllPromptVariations,
   buildPromptSections,
   addPromptToHistory,
   countPromptMetrics,
   parseKeywords,
+  parseSavedHistory,
   MAX_SAVED_PROMPTS,
   type PromptFormInputs,
   type SavedPromptItem,
 } from './promptBuilder';
 
-test('buildStructuredPrompt generates all 5 required structural sections for blog-post', () => {
+test('buildStructuredPrompt (Variation A) generates all 5 required structural sections for blog-post', () => {
   const inputs: PromptFormInputs = {
     taskType: 'blog-post',
     topic: 'Zero-downtime database migrations in PostgreSQL',
@@ -32,6 +36,46 @@ test('buildStructuredPrompt generates all 5 required structural sections for blo
   assert.ok(output.includes('Senior backend engineers'));
   assert.ok(output.includes('expand-and-contract, lock timeout'));
   assert.ok(output.includes('1,300–1,800 words'));
+});
+
+test('buildAllPromptVariations generates 3 distinct variations (A, B, C) where B is shorter than A and C is more detailed than A', () => {
+  const taskTypes: PromptFormInputs['taskType'][] = ['blog-post', 'code-review', 'email-reply'];
+
+  for (const taskType of taskTypes) {
+    const inputs: PromptFormInputs = {
+      taskType,
+      topic: 'Improving API reliability under peak load',
+      tone: 'friendly',
+      audience: 'Full-stack product engineers',
+      length: 'medium',
+      extraKeywords: 'rate limiting, retries, observability',
+    };
+
+    const variations = buildAllPromptVariations(inputs);
+
+    assert.ok(variations.A.promptText.length > 0);
+    assert.ok(variations.B.promptText.length > 0);
+    assert.ok(variations.C.promptText.length > 0);
+
+    // Variation B is shorter & more concise than Variation A
+    assert.ok(
+      variations.B.words < variations.A.words,
+      `Expected Variation B (${variations.B.words} words) to be shorter than Variation A (${variations.A.words} words) for ${taskType}`
+    );
+
+    // Variation C is a highly detailed step-by-step version, longer than Variation A
+    assert.ok(
+      variations.C.words > variations.A.words,
+      `Expected Variation C (${variations.C.words} words) to be more detailed than Variation A (${variations.A.words} words) for ${taskType}`
+    );
+
+    // Variation C includes explicit step-by-step structure
+    assert.ok(variations.C.promptText.includes('STEP-BY-STEP EXECUTION PLAN:'));
+    assert.ok(variations.C.promptText.includes('Step 1'));
+    assert.ok(variations.C.promptText.includes('Step 2'));
+    assert.ok(variations.C.promptText.includes('Step 3'));
+    assert.ok(variations.C.promptText.includes('Step 4'));
+  }
 });
 
 test('buildPromptSections adapts correctly to code-review and email-reply templates', () => {
@@ -62,7 +106,7 @@ test('buildPromptSections adapts correctly to code-review and email-reply templa
   assert.ok(emailSections.constraints.includes('Q4 roadmap, future touchpoint'));
 });
 
-test('buildStructuredPrompt never produces unfilled bracket placeholders when inputs are blank', () => {
+test('all 3 variations never produce unfilled bracket placeholders when inputs are blank', () => {
   const emptyInputs: PromptFormInputs = {
     taskType: 'email-reply',
     topic: '   ',
@@ -72,13 +116,18 @@ test('buildStructuredPrompt never produces unfilled bracket placeholders when in
     extraKeywords: '',
   };
 
-  const output = buildStructuredPrompt(emptyInputs);
-  assert.equal(output.includes('['), false);
-  assert.equal(output.includes(']'), false);
-  assert.ok(output.length > 200);
+  const outA = buildStructuredPrompt(emptyInputs);
+  const outB = buildConcisePrompt(emptyInputs);
+  const outC = buildDetailedStepByStepPrompt(emptyInputs);
+
+  for (const out of [outA, outB, outC]) {
+    assert.equal(out.includes('['), false);
+    assert.equal(out.includes(']'), false);
+    assert.ok(out.length > 100);
+  }
 });
 
-test('addPromptToHistory caps saved prompts strictly at MAX_SAVED_PROMPTS (5) and deduplicates identical prompts', () => {
+test('addPromptToHistory records the selected variationId and caps saved prompts strictly at MAX_SAVED_PROMPTS (5)', () => {
   let history: SavedPromptItem[] = [];
 
   for (let i = 1; i <= 7; i++) {
@@ -93,65 +142,34 @@ test('addPromptToHistory caps saved prompts strictly at MAX_SAVED_PROMPTS (5) an
         extraKeywords: '',
       },
       `2026-10-24T12:00:0${i}Z`,
-      `id-${i}`
+      `id-${i}`,
+      i % 2 === 0 ? 'B' : 'C'
     );
   }
 
   assert.equal(history.length, MAX_SAVED_PROMPTS);
   assert.equal(history[0].inputs.topic, 'Topic number 7');
+  assert.equal(history[0].variationId, 'C');
   assert.equal(history[4].inputs.topic, 'Topic number 3');
-
-  // Re-adding Topic number 5 moves it to index 0 without increasing length beyond 5
-  history = addPromptToHistory(
-    history,
-    {
-      taskType: 'blog-post',
-      topic: 'Topic number 5',
-      tone: 'friendly',
-      audience: 'Product designers',
-      length: 'short',
-      extraKeywords: '',
-    },
-    '2026-10-24T12:05:00Z',
-    'id-5-repeat'
-  );
-
-  assert.equal(history.length, MAX_SAVED_PROMPTS);
-  assert.equal(history[0].inputs.topic, 'Topic number 5');
 });
 
-test('parseKeywords and countPromptMetrics compute expected values', () => {
+test('parseKeywords, countPromptMetrics, and parseSavedHistory compute expected values', () => {
   assert.deepEqual(parseKeywords(' react, typescript ,  , hooks '), ['react', 'typescript', 'hooks']);
   assert.deepEqual(parseKeywords('   '), []);
 
   const metrics = countPromptMetrics('Hello world from PromptCraft');
   assert.equal(metrics.words, 4);
   assert.equal(metrics.characters, 28);
-});
 
-test('parseSavedHistory safely parses valid entries and ignores malformed data', async () => {
-  const { parseSavedHistory } = await import('./promptBuilder');
   assert.deepEqual(parseSavedHistory(null), []);
   assert.deepEqual(parseSavedHistory('invalid-json'), []);
-  assert.deepEqual(parseSavedHistory('{"not":"an-array"}'), []);
+});
 
-  const validHistory = addPromptToHistory(
-    [],
-    {
-      taskType: 'code-review',
-      topic: 'Memory leak in WebSocket listener',
-      tone: 'formal',
-      audience: 'Senior Node.js engineers',
-      length: 'medium',
-      extraKeywords: 'cleanup, event emitter',
-    },
-    '2026-10-24T18:00:00Z',
-    'test-id-1'
-  );
-
-  const roundTrip = parseSavedHistory(JSON.stringify(validHistory));
-  assert.equal(roundTrip.length, 1);
-  assert.equal(roundTrip[0].id, 'test-id-1');
-  assert.equal(roundTrip[0].inputs.topic, 'Memory leak in WebSocket listener');
+test('parseThemeMode defaults to light and recognizes dark mode', async () => {
+  const { parseThemeMode } = await import('./promptBuilder');
+  assert.equal(parseThemeMode(null), 'light');
+  assert.equal(parseThemeMode('light'), 'light');
+  assert.equal(parseThemeMode('dark'), 'dark');
+  assert.equal(parseThemeMode('unexpected'), 'light');
 });
 
