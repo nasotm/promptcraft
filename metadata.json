@@ -1,0 +1,6 @@
+{
+  "name": "PromptCraft",
+  "description": "Write structured, copy-paste-ready AI prompts for ChatGPT and Claude by combining simple form inputs with proven templates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
